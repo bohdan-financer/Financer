@@ -13,25 +13,34 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Initialize minimal Sanity project
+      - name: Export dataset from Sanity using API
         run: |
-          npm init -y
-          npm install @sanity/cli
+          # Экспорт всех документов (включая metadata изображений)
+          curl -X GET \
+            "https://${{ secrets.SANITY_PROJECT_ID }}.api.sanity.io/v2021-06-07/data/export/production?token=${{ secrets.SANITY_TOKEN }}" \
+            -H "Authorization: Bearer ${{ secrets.SANITY_TOKEN }}" \
+            -o sanity-backup.ndjson
+          
+          # Экспорт assets (изображения и файлы) - включает сами файлы
+          curl -X GET \
+            "https://${{ secrets.SANITY_PROJECT_ID }}.api.sanity.io/v2021-06-07/data/export/production/assets?token=${{ secrets.SANITY_TOKEN }}" \
+            -H "Authorization: Bearer ${{ secrets.SANITY_TOKEN }}" \
+            -o sanity-assets.tar.gz
+          
+          # Создаем единый архив со всем содержимым
+          mkdir backup
+          mv sanity-backup.ndjson backup/
+          mv sanity-assets.tar.gz backup/
+          tar -czf sanity-backup-full.tar.gz backup/
 
-      - name: Export dataset from Sanity
-        run: npx sanity dataset export production sanity-backup.tar.gz --project ${{ secrets.SANITY_PROJECT_ID }} --dataset production --token ${{ secrets.SANITY_TOKEN }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Upload to S3
-        uses: jakejarvis/s3-sync-action@master
-        env:
-          AWS_S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          SOURCE_DIR: .
-          DEST_DIR: backups/
+        run: |
+          BACKUP_DATE=$(date +%Y-%m-%d_%H-%M-%S)
+          aws s3 cp sanity-backup-full.tar.gz s3://${{ secrets.S3_BUCKET }}/backups/sanity-backup-${BACKUP_DATE}.tar.gz

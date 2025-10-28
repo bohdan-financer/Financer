@@ -1,0 +1,13 @@
+markets-config.json
+
+node_modules/
+
+*.ndjson
+*.tar.gz
+assets/
+backup/
+data.ndjson
+
+.DS_Store
+Thumbs.db
+

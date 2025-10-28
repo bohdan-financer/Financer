@@ -1,0 +1,6 @@
+[
+  { "market": "Spain", "id": "your_project_id_1", "key": "sk_your_sanity_token_with_read_permissions_1" },
+  { "market": "Brazil", "id": "your_project_id_2", "key": "sk_your_sanity_token_with_read_permissions_2" },
+  { "market": "Mexico", "id": "your_project_id_3", "key": "sk_your_sanity_token_with_read_permissions_3" }
+]
+

@@ -2,13 +2,31 @@ name: Sanity Daily Backup
 
 on:
   schedule:
-    - cron: '0 3 * * *'  # каждый день в 3:00 UTC
-  workflow_dispatch:      # можно запустить вручную
+    - cron: '0 3 * * *'  # Daily at 3:00 AM UTC
+  workflow_dispatch:      # Manual trigger
 
 jobs:
-  backup:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      markets: ${{ steps.set-markets.outputs.markets }}
+    steps:
+      - name: Set markets matrix
+        id: set-markets
+        run: |
+          echo 'markets=${{ secrets.SANITY_MARKETS }}' >> $GITHUB_OUTPUT
 
+  backup:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        market: ${{ fromJson(needs.prepare.outputs.markets) }}
+      fail-fast: false  # Continue even if one market fails
+      max-parallel: 5   # Maximum 5 markets processed simultaneously
+    
+    name: Backup ${{ matrix.market.market }}
+    
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -54,7 +72,7 @@ jobs:
           async function exportData() {
             console.log('Exporting documents...');
             
-            // Export documents
+            // Export documents via Sanity HTTP API
             const exportUrl = `https://${PROJECT_ID}.api.sanity.io/v1/data/export/${DATASET}`;
             
             await new Promise((resolve, reject) => {
@@ -72,7 +90,7 @@ jobs:
               }).on('error', reject);
             });
             
-            // Parse and download assets
+            // Parse documents and extract asset references
             console.log('Parsing assets...');
             const data = fs.readFileSync('data.ndjson', 'utf8');
             const lines = data.split('\n').filter(line => line.trim());
@@ -83,7 +101,7 @@ jobs:
                 const doc = JSON.parse(line);
                 const jsonStr = JSON.stringify(doc);
                 
-                // Find all asset references
+                // Find all image asset references
                 const matches = jsonStr.matchAll(/"_ref":"(image-[a-f0-9]+-\d+x\d+-[a-z]+)"/g);
                 for (const match of matches) {
                   assetRefs.add(match[1]);
@@ -100,11 +118,11 @@ jobs:
               fs.mkdirSync('assets');
             }
             
-            // Download assets
+            // Download all assets from CDN
             let downloaded = 0;
             for (const ref of assetRefs) {
               try {
-                // Convert ref to URL: image-abc123-1920x1080-jpg -> abc123-1920x1080.jpg
+                // Convert ref to CDN URL: image-abc123-1920x1080-jpg -> abc123-1920x1080.jpg
                 const parts = ref.replace('image-', '').split('-');
                 const hash = parts[0];
                 const dimensions = parts[1];
@@ -128,23 +146,25 @@ jobs:
           exportData().catch(console.error);
           ENDOFFILE
           
-          # Create package.json
+          # Create minimal package.json for ES modules support
           echo '{"type": "module"}' > package.json
 
       - name: Run backup
         run: |
           node backup.js
           
-          # Create archive
+          # Create archive with market name and timestamp
           BACKUP_DATE=$(date +%Y-%m-%d_%H-%M-%S)
-          tar -czf sanity-backup-${BACKUP_DATE}.tar.gz data.ndjson assets/
+          MARKET_NAME="${{ matrix.market.market }}"
+          MARKET_SLUG=$(echo "$MARKET_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+          tar -czf sanity-backup-${MARKET_SLUG}-${BACKUP_DATE}.tar.gz data.ndjson assets/
           
-          echo "Backup completed!"
+          echo "✅ Backup completed for $MARKET_NAME!"
           ls -lh sanity-backup-*.tar.gz
-          du -sh assets/
+          du -sh assets/ 2>/dev/null || echo "No assets found"
         env:
-          SANITY_PROJECT_ID: ${{ secrets.SANITY_PROJECT_ID }}
-          SANITY_TOKEN: ${{ secrets.SANITY_TOKEN }}
+          SANITY_PROJECT_ID: ${{ matrix.market.id }}
+          SANITY_TOKEN: ${{ matrix.market.key }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -155,11 +175,15 @@ jobs:
 
       - name: Upload to S3
         run: |
-          # Находим файл бэкапа (с датой в имени)
+          # Find backup file (with timestamp in name)
           BACKUP_FILE=$(ls sanity-backup-*.tar.gz)
+          MARKET_NAME="${{ matrix.market.market }}"
+          MARKET_SLUG=$(echo "$MARKET_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+          
           echo "Uploading ${BACKUP_FILE} to S3..."
           
-          aws s3 cp ${BACKUP_FILE} s3://${{ secrets.S3_BUCKET }}/backups/${BACKUP_FILE}
+          # Upload to market-specific folder
+          aws s3 cp ${BACKUP_FILE} s3://${{ secrets.S3_BUCKET }}/backups/${MARKET_SLUG}/${BACKUP_FILE}
           
-          echo "Backup successfully uploaded to S3!"
-          echo "Location: s3://${{ secrets.S3_BUCKET }}/backups/${BACKUP_FILE}"
+          echo "✅ Backup for $MARKET_NAME successfully uploaded to S3!"
+          echo "📍 Location: s3://${{ secrets.S3_BUCKET }}/backups/${MARKET_SLUG}/${BACKUP_FILE}"

@@ -13,11 +13,18 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install Sanity CLI
-        run: npm install -g @sanity/cli
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Initialize minimal Sanity project
+        run: |
+          npm init -y
+          npm install @sanity/cli
 
       - name: Export dataset from Sanity
-        run: sanity dataset export production sanity-backup.tar.gz --project ${{ secrets.SANITY_PROJECT_ID }} --dataset production --token ${{ secrets.SANITY_TOKEN }}
+        run: npx sanity dataset export production sanity-backup.tar.gz --project ${{ secrets.SANITY_PROJECT_ID }} --dataset production --token ${{ secrets.SANITY_TOKEN }}
 
       - name: Upload to S3
         uses: jakejarvis/s3-sync-action@master

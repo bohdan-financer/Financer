@@ -8,13 +8,6 @@ on:
 jobs:
   backup:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        market: ${{ fromJson(secrets.SANITY_MARKETS) }}
-      fail-fast: false  # Continue even if one market fails
-      max-parallel: 5   # Maximum 5 markets processed simultaneously
-    
-    name: Backup ${{ matrix.market.market }}
     
     steps:
       - name: Checkout repo
@@ -138,22 +131,102 @@ jobs:
           # Create minimal package.json for ES modules support
           echo '{"type": "module"}' > package.json
 
-      - name: Run backup
+      - name: Create backup wrapper script
         run: |
-          node backup.js
+          cat > backup-all.js << 'ENDOFFILE'
+          import { exec } from 'child_process';
+          import { promisify } from 'util';
+          import fs from 'fs';
           
-          # Create archive with market name and timestamp
-          BACKUP_DATE=$(date +%Y-%m-%d_%H-%M-%S)
-          MARKET_NAME="${{ matrix.market.market }}"
-          MARKET_SLUG=$(echo "$MARKET_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
-          tar -czf sanity-backup-${MARKET_SLUG}-${BACKUP_DATE}.tar.gz data.ndjson assets/
+          const execAsync = promisify(exec);
+          const markets = JSON.parse(process.env.SANITY_MARKETS);
           
-          echo "✅ Backup completed for $MARKET_NAME!"
-          ls -lh sanity-backup-*.tar.gz
-          du -sh assets/ 2>/dev/null || echo "No assets found"
+          console.log(`Starting backup for ${markets.length} markets...`);
+          
+          async function backupMarket(market) {
+            const marketSlug = market.market.toLowerCase().replace(/\s+/g, '-');
+            console.log(`\n📦 Processing ${market.market}...`);
+            
+            try {
+              // Run backup script
+              const { stdout, stderr } = await execAsync('node backup.js', {
+                env: {
+                  ...process.env,
+                  SANITY_PROJECT_ID: market.id,
+                  SANITY_TOKEN: market.key
+                }
+              });
+              
+              if (stdout) console.log(stdout);
+              if (stderr) console.error(stderr);
+              
+              // Create archive
+              const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+              const filename = `sanity-backup-${marketSlug}-${timestamp}.tar.gz`;
+              
+              await execAsync(`tar -czf ${filename} data.ndjson assets/`);
+              
+              console.log(`✅ ${market.market} backup completed: ${filename}`);
+              
+              // Cleanup for next market
+              await execAsync('rm -rf data.ndjson assets/');
+              
+              return { market: market.market, filename, success: true };
+            } catch (error) {
+              console.error(`❌ ${market.market} backup failed:`, error.message);
+              // Cleanup on error
+              try { await execAsync('rm -rf data.ndjson assets/'); } catch {}
+              return { market: market.market, error: error.message, success: false };
+            }
+          }
+          
+          // Process markets with concurrency limit
+          async function processWithConcurrency(items, concurrency, fn) {
+            const results = [];
+            const executing = [];
+            
+            for (const item of items) {
+              const promise = fn(item).then(result => {
+                executing.splice(executing.indexOf(promise), 1);
+                return result;
+              });
+              results.push(promise);
+              executing.push(promise);
+              
+              if (executing.length >= concurrency) {
+                await Promise.race(executing);
+              }
+            }
+            
+            return Promise.all(results);
+          }
+          
+          // Run backups with max 5 concurrent
+          const results = await processWithConcurrency(markets, 5, backupMarket);
+          
+          console.log('\n\n📊 Backup Summary:');
+          console.log('==================');
+          const successful = results.filter(r => r.success);
+          const failed = results.filter(r => !r.success);
+          
+          console.log(`✅ Successful: ${successful.length}`);
+          console.log(`❌ Failed: ${failed.length}`);
+          
+          if (failed.length > 0) {
+            console.log('\nFailed markets:');
+            failed.forEach(r => console.log(`  - ${r.market}: ${r.error}`));
+          }
+          
+          // List all created backups
+          const { stdout } = await execAsync('ls -lh sanity-backup-*.tar.gz 2>/dev/null || echo "No backups created"');
+          console.log('\n📦 Created backups:');
+          console.log(stdout);
+          ENDOFFILE
+
+      - name: Run backups for all markets
+        run: node backup-all.js
         env:
-          SANITY_PROJECT_ID: ${{ matrix.market.id }}
-          SANITY_TOKEN: ${{ matrix.market.key }}
+          SANITY_MARKETS: ${{ secrets.SANITY_MARKETS }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -162,17 +235,22 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Upload to S3
+      - name: Upload all backups to S3
         run: |
-          # Find backup file (with timestamp in name)
-          BACKUP_FILE=$(ls sanity-backup-*.tar.gz)
-          MARKET_NAME="${{ matrix.market.market }}"
-          MARKET_SLUG=$(echo "$MARKET_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+          echo "📤 Uploading backups to S3..."
           
-          echo "Uploading ${BACKUP_FILE} to S3..."
+          # Upload each backup to its market-specific folder
+          for BACKUP_FILE in sanity-backup-*.tar.gz; do
+            if [ -f "$BACKUP_FILE" ]; then
+              # Extract market name from filename: sanity-backup-spain-2025-10-28... -> spain
+              MARKET_SLUG=$(echo "$BACKUP_FILE" | sed 's/sanity-backup-\([^-]*\)-.*/\1/')
+              
+              echo "📦 Uploading $BACKUP_FILE to $MARKET_SLUG folder..."
+              aws s3 cp "$BACKUP_FILE" "s3://${{ secrets.S3_BUCKET }}/backups/${MARKET_SLUG}/${BACKUP_FILE}"
+              
+              echo "✅ Uploaded: s3://${{ secrets.S3_BUCKET }}/backups/${MARKET_SLUG}/${BACKUP_FILE}"
+            fi
+          done
           
-          # Upload to market-specific folder
-          aws s3 cp ${BACKUP_FILE} s3://${{ secrets.S3_BUCKET }}/backups/${MARKET_SLUG}/${BACKUP_FILE}
-          
-          echo "✅ Backup for $MARKET_NAME successfully uploaded to S3!"
-          echo "📍 Location: s3://${{ secrets.S3_BUCKET }}/backups/${MARKET_SLUG}/${BACKUP_FILE}"
+          echo ""
+          echo "🎉 All backups uploaded successfully!"

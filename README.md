@@ -20,8 +20,9 @@ Automated daily backup of Sanity CMS to AWS S3 for multiple markets.
 ### What Gets Exported:
 
 - ✅ **All documents** (content, structure, metadata)
-- ✅ **Images and files** (original assets from CDN)
-- ✅ **Complete archive** in `.tar.gz` format with timestamp
+- ✅ **Asset references** (links to images and files)
+- ✅ **Lightweight archive** in `.tar.gz` format with timestamp
+- ℹ️ **Note:** Actual image files are NOT included (see `BACKUP_WITH_ASSETS.md` to re-enable)
 
 ### Schedule:
 
@@ -34,6 +35,8 @@ Automated daily backup of Sanity CMS to AWS S3 for multiple markets.
 - **Fail-safe** - one market failure won't stop others
 - **Organized storage** - separate S3 folders per market
 - **No dependencies** - pure Node.js HTTP API calls
+- **Fast backups** - documents only (~2 minutes per market)
+- **Small archives** - typically < 10 MB per market
 
 ---
 
@@ -163,10 +166,13 @@ tar -xzf sanity-backup-spain-2025-10-28_03-00-00.tar.gz
 sanity dataset import data.ndjson production --replace
 ```
 
-#### Import Assets (Images):
-Assets are automatically restored when importing documents with proper references.
-
 > **⚠️ Warning:** The `--replace` flag will delete all existing data in the dataset. To add data instead, use without the flag.
+
+#### About Assets (Images):
+- Asset references are preserved in documents
+- Original images remain on Sanity CDN and will continue to work
+- No need to restore assets separately unless CDN images were deleted
+- If needed, see `BACKUP_WITH_ASSETS.md` for full asset backup/restore
 
 ---
 
@@ -210,13 +216,13 @@ The script automatically detects your OS and copies to clipboard!
 Each backup contains:
 
 ```
-sanity-backup-market-2025-10-28_03-00-00.tar.gz
-├── data.ndjson              # All documents in NDJSON format
-└── assets/                  # All images and files
-    ├── abc123-1920x1080.jpg
-    ├── def456-800x600.png
-    └── ...
+sanity-backup-market-2025-10-28T13-21-07.tar.gz
+└── data.ndjson              # All documents in NDJSON format (with asset references)
 ```
+
+**Note:** Images are not included in backups. Asset references (URLs) are preserved in documents.
+- Images remain accessible on Sanity CDN
+- See `BACKUP_WITH_ASSETS.md` for full backup option (significantly slower)
 
 ---
 

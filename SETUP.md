@@ -72,6 +72,17 @@ You should see jobs appear for each market!
 
 Backups will now run automatically every day at 3:00 AM UTC.
 
+### Important Notes:
+
+- **Backups include documents only** (not image files)
+- Image references are preserved, images remain on Sanity CDN
+- Backup time: ~2 minutes per market (fast!)
+- Archive size: typically < 10 MB per market
+
+**Want to include images?** See `BACKUP_WITH_ASSETS.md` for instructions.
+- Note: Including assets increases backup time to 30+ minutes per market
+- Total workflow time would be 2-3 hours for all markets
+
 ---
 
 ## 📝 How to Add a New Market Later?

@@ -6,6 +6,7 @@ node_modules/
 *.tar.gz
 assets/
 backup/
+backup-*/
 data.ndjson
 
 .DS_Store

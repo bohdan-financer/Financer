@@ -18,53 +18,133 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Setup Sanity project
+      - name: Create backup script
         run: |
-          # Создаем package.json с sanity в зависимостях
-          cat > package.json << 'EOF'
-          {
-            "name": "sanity-backup",
-            "version": "1.0.0",
-            "type": "module",
-            "dependencies": {
-              "sanity": "^3.0.0",
-              "@sanity/cli": "^3.0.0"
-            }
+          cat > backup.js << 'ENDOFFILE'
+          import https from 'https';
+          import fs from 'fs';
+          import path from 'path';
+          import { createWriteStream } from 'fs';
+          import { pipeline } from 'stream/promises';
+          
+          const PROJECT_ID = process.env.SANITY_PROJECT_ID;
+          const TOKEN = process.env.SANITY_TOKEN;
+          const DATASET = 'production';
+          
+          async function downloadFile(url, dest) {
+            return new Promise((resolve, reject) => {
+              https.get(url, (response) => {
+                if (response.statusCode === 302 || response.statusCode === 301) {
+                  downloadFile(response.headers.location, dest).then(resolve).catch(reject);
+                  return;
+                }
+                const file = createWriteStream(dest);
+                response.pipe(file);
+                file.on('finish', () => {
+                  file.close();
+                  resolve();
+                });
+                file.on('error', (err) => {
+                  fs.unlink(dest, () => reject(err));
+                });
+              }).on('error', reject);
+            });
           }
-          EOF
           
-          # Устанавливаем зависимости
-          npm install
+          async function exportData() {
+            console.log('Exporting documents...');
+            
+            // Export documents
+            const exportUrl = `https://${PROJECT_ID}.api.sanity.io/v1/data/export/${DATASET}`;
+            
+            await new Promise((resolve, reject) => {
+              https.get(exportUrl, {
+                headers: { 'Authorization': `Bearer ${TOKEN}` }
+              }, (response) => {
+                const file = createWriteStream('data.ndjson');
+                response.pipe(file);
+                file.on('finish', () => {
+                  file.close();
+                  console.log('Documents exported successfully');
+                  resolve();
+                });
+                file.on('error', reject);
+              }).on('error', reject);
+            });
+            
+            // Parse and download assets
+            console.log('Parsing assets...');
+            const data = fs.readFileSync('data.ndjson', 'utf8');
+            const lines = data.split('\n').filter(line => line.trim());
+            
+            const assetRefs = new Set();
+            for (const line of lines) {
+              try {
+                const doc = JSON.parse(line);
+                const jsonStr = JSON.stringify(doc);
+                
+                // Find all asset references
+                const matches = jsonStr.matchAll(/"_ref":"(image-[a-f0-9]+-\d+x\d+-[a-z]+)"/g);
+                for (const match of matches) {
+                  assetRefs.add(match[1]);
+                }
+              } catch (e) {
+                // Skip invalid lines
+              }
+            }
+            
+            console.log(`Found ${assetRefs.size} unique assets`);
+            
+            // Create assets directory
+            if (!fs.existsSync('assets')) {
+              fs.mkdirSync('assets');
+            }
+            
+            // Download assets
+            let downloaded = 0;
+            for (const ref of assetRefs) {
+              try {
+                // Convert ref to URL: image-abc123-1920x1080-jpg -> abc123-1920x1080.jpg
+                const parts = ref.replace('image-', '').split('-');
+                const hash = parts[0];
+                const dimensions = parts[1];
+                const ext = parts[2];
+                const filename = `${hash}-${dimensions}.${ext}`;
+                const url = `https://cdn.sanity.io/images/${PROJECT_ID}/${DATASET}/${filename}`;
+                
+                await downloadFile(url, path.join('assets', filename));
+                downloaded++;
+                if (downloaded % 10 === 0) {
+                  console.log(`Downloaded ${downloaded}/${assetRefs.size} assets...`);
+                }
+              } catch (err) {
+                console.error(`Failed to download ${ref}: ${err.message}`);
+              }
+            }
+            
+            console.log(`Successfully downloaded ${downloaded} assets`);
+          }
           
-          # Создаем sanity.config.js (ES modules format)
-          cat > sanity.config.js << 'EOF'
-          import {defineConfig} from 'sanity'
+          exportData().catch(console.error);
+          ENDOFFILE
           
-          export default defineConfig({
-            name: 'default',
-            title: 'Backup',
-            projectId: process.env.SANITY_PROJECT_ID,
-            dataset: 'production',
-          })
-          EOF
-        env:
-          SANITY_PROJECT_ID: ${{ secrets.SANITY_PROJECT_ID }}
+          # Create package.json
+          echo '{"type": "module"}' > package.json
 
-      - name: Export dataset with assets
+      - name: Run backup
         run: |
-          # Экспортируем все данные включая assets через Sanity CLI
-          npx sanity dataset export production backup.tar.gz --assets
+          node backup.js
           
-          # Показываем размер бэкапа
-          echo "Backup completed!"
-          ls -lh backup.tar.gz
-          
-          # Переименовываем с датой
+          # Create archive
           BACKUP_DATE=$(date +%Y-%m-%d_%H-%M-%S)
-          mv backup.tar.gz sanity-backup-${BACKUP_DATE}.tar.gz
+          tar -czf sanity-backup-${BACKUP_DATE}.tar.gz data.ndjson assets/
+          
+          echo "Backup completed!"
+          ls -lh sanity-backup-*.tar.gz
+          du -sh assets/
         env:
-          SANITY_AUTH_TOKEN: ${{ secrets.SANITY_TOKEN }}
           SANITY_PROJECT_ID: ${{ secrets.SANITY_PROJECT_ID }}
+          SANITY_TOKEN: ${{ secrets.SANITY_TOKEN }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4

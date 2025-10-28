@@ -20,21 +20,35 @@ jobs:
 
       - name: Setup Sanity project
         run: |
-          # Создаем минимальный package.json
-          npm init -y
+          # Создаем package.json с sanity в зависимостях
+          cat > package.json << 'EOF'
+          {
+            "name": "sanity-backup",
+            "version": "1.0.0",
+            "type": "module",
+            "dependencies": {
+              "sanity": "^3.0.0",
+              "@sanity/cli": "^3.0.0"
+            }
+          }
+          EOF
           
-          # Устанавливаем Sanity CLI локально
-          npm install @sanity/cli
+          # Устанавливаем зависимости
+          npm install
           
-          # Создаем минимальный sanity.config.js
-          cat > sanity.config.js << EOF
+          # Создаем sanity.config.js (ES modules format)
+          cat > sanity.config.js << 'EOF'
           import {defineConfig} from 'sanity'
           
           export default defineConfig({
-            projectId: '${{ secrets.SANITY_PROJECT_ID }}',
+            name: 'default',
+            title: 'Backup',
+            projectId: process.env.SANITY_PROJECT_ID,
             dataset: 'production',
           })
           EOF
+        env:
+          SANITY_PROJECT_ID: ${{ secrets.SANITY_PROJECT_ID }}
 
       - name: Export dataset with assets
         run: |
@@ -50,6 +64,7 @@ jobs:
           mv backup.tar.gz sanity-backup-${BACKUP_DATE}.tar.gz
         env:
           SANITY_AUTH_TOKEN: ${{ secrets.SANITY_TOKEN }}
+          SANITY_PROJECT_ID: ${{ secrets.SANITY_PROJECT_ID }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4

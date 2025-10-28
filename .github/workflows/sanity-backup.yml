@@ -13,25 +13,43 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Export dataset from Sanity using API
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Sanity project
         run: |
-          # Экспорт всех документов (включая metadata изображений)
-          curl -X GET \
-            "https://${{ secrets.SANITY_PROJECT_ID }}.api.sanity.io/v2021-06-07/data/export/production?token=${{ secrets.SANITY_TOKEN }}" \
-            -H "Authorization: Bearer ${{ secrets.SANITY_TOKEN }}" \
-            -o sanity-backup.ndjson
+          # Создаем минимальный package.json
+          npm init -y
           
-          # Экспорт assets (изображения и файлы) - включает сами файлы
-          curl -X GET \
-            "https://${{ secrets.SANITY_PROJECT_ID }}.api.sanity.io/v2021-06-07/data/export/production/assets?token=${{ secrets.SANITY_TOKEN }}" \
-            -H "Authorization: Bearer ${{ secrets.SANITY_TOKEN }}" \
-            -o sanity-assets.tar.gz
+          # Устанавливаем Sanity CLI локально
+          npm install @sanity/cli
           
-          # Создаем единый архив со всем содержимым
-          mkdir backup
-          mv sanity-backup.ndjson backup/
-          mv sanity-assets.tar.gz backup/
-          tar -czf sanity-backup-full.tar.gz backup/
+          # Создаем минимальный sanity.config.js
+          cat > sanity.config.js << EOF
+          import {defineConfig} from 'sanity'
+          
+          export default defineConfig({
+            projectId: '${{ secrets.SANITY_PROJECT_ID }}',
+            dataset: 'production',
+          })
+          EOF
+
+      - name: Export dataset with assets
+        run: |
+          # Экспортируем все данные включая assets через Sanity CLI
+          npx sanity dataset export production backup.tar.gz --assets
+          
+          # Показываем размер бэкапа
+          echo "Backup completed!"
+          ls -lh backup.tar.gz
+          
+          # Переименовываем с датой
+          BACKUP_DATE=$(date +%Y-%m-%d_%H-%M-%S)
+          mv backup.tar.gz sanity-backup-${BACKUP_DATE}.tar.gz
+        env:
+          SANITY_AUTH_TOKEN: ${{ secrets.SANITY_TOKEN }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -42,5 +60,11 @@ jobs:
 
       - name: Upload to S3
         run: |
-          BACKUP_DATE=$(date +%Y-%m-%d_%H-%M-%S)
-          aws s3 cp sanity-backup-full.tar.gz s3://${{ secrets.S3_BUCKET }}/backups/sanity-backup-${BACKUP_DATE}.tar.gz
+          # Находим файл бэкапа (с датой в имени)
+          BACKUP_FILE=$(ls sanity-backup-*.tar.gz)
+          echo "Uploading ${BACKUP_FILE} to S3..."
+          
+          aws s3 cp ${BACKUP_FILE} s3://${{ secrets.S3_BUCKET }}/backups/${BACKUP_FILE}
+          
+          echo "Backup successfully uploaded to S3!"
+          echo "Location: s3://${{ secrets.S3_BUCKET }}/backups/${BACKUP_FILE}"

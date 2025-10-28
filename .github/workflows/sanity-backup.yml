@@ -6,22 +6,11 @@ on:
   workflow_dispatch:      # Manual trigger
 
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      markets: ${{ steps.set-markets.outputs.markets }}
-    steps:
-      - name: Set markets matrix
-        id: set-markets
-        run: |
-          echo 'markets=${{ secrets.SANITY_MARKETS }}' >> $GITHUB_OUTPUT
-
   backup:
-    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        market: ${{ fromJson(needs.prepare.outputs.markets) }}
+        market: ${{ fromJson(secrets.SANITY_MARKETS) }}
       fail-fast: false  # Continue even if one market fails
       max-parallel: 5   # Maximum 5 markets processed simultaneously
     
